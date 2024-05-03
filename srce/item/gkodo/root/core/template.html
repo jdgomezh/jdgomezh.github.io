@@ -1,0 +1,29 @@
+<template>
+	<div class="header">
+		<div class="container">
+			<slot name="header"></slot>
+		</div>
+	</div>
+	<div class="footer">
+		<div class="container">
+			<slot name="footer"></slot>
+		</div>
+	</div>
+	<div class="body">
+		<div class="navbar">
+			<div class="container">
+				<slot name="navbar"></slot>
+			</div>
+		</div>
+		<div class="sidebar">
+			<div class="container">
+				<slot name="sidebar"></slot>
+			</div>
+		</div>
+		<div class="content">
+			<div class="container">
+				<slot name="content"></slot>
+			</div>
+		</div>
+	</div>
+</template>
