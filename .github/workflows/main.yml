@@ -1,0 +1,108 @@
+name: Backoffice Publish Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Seleccione el environment a usar'
+        required: true
+        type: choice
+        options:
+          - test
+          - prod
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    environment: ${{ github.event.inputs.environment }}
+    outputs:
+      datetime: ${{ steps.set_datetime.outputs.datetime }}
+      branch: ${{ steps.set_branch.outputs.branch }}
+    steps:
+      - name: Set the branch based on the environment
+        id: set_branch
+        run: |
+          $env = "${{ github.event.inputs.environment }}"
+          if ($env -eq "test") {
+            echo "::set-output name=branch::testing"
+          } elseif ($env == 'prod') {
+            echo "::set-output name=branch::main"
+          }
+      - name: Set the date and time
+        id: set_datetime
+        run: echo "::set-output name=datetime::$(Get-Date -Format 'yyyyMMddHHmmss')"
+        shell: pwsh
+  build:
+    runs-on: windows-latest
+    environment: ${{ github.event.inputs.environment }}
+    needs: setup
+    steps:
+      - name: Get the source code of the .NET solution
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ needs.setup.outputs.branch }}
+      - name: Install .NET Framework 4.6.1 Developer Pack
+        run: |
+          $url = "https://go.microsoft.com/fwlink/?linkid=2099470"
+          $output = "C:\temp\ndp461-devpack-kb3105179-enu.exe"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Start-Process $output -ArgumentList '/quiet /norestart' -Wait
+      - name: Install and configure the NuGet Client
+        uses: nuget/setup-nuget@v1
+        with:
+          nuget-version: '5.8.0'
+      - name: Configure NuGet sources and API key
+        env:
+          GH_ACTION_CICD: ${{ secrets.GH_ACTION_CICD }}
+        run: |
+          nuget sources Update -Name "GitHub-Siigo-Legacy" -Source "https://nuget.pkg.github.com/Siigo-Legacy/index.json" -Username ${{ github.actor }} -Password ${{ secrets.GH_ACTION_CICD }} -ConfigFile .github/config/NuGet.config -StorePasswordInClearText
+          nuget setApiKey ${{ secrets.GH_ACTION_CICD }} -Source "GitHub-Siigo-Legacy" -ConfigFile .github/config/NuGet.config
+      - name: Restore the NuGet packages for the .NET solution
+        run: |
+          nuget restore BackOffice/Web/Cliente/Memory.BackOffice.sln -ConfigFile .github/config/NuGet.config
+      - name: Build the .NET solution
+        run: |
+          $outDir = Join-Path -Path $PWD -ChildPath "publish/"
+          $projectPath = Join-Path -Path $PWD -ChildPath "BackOffice/Web/Cliente/Memory.App/Memory.BackOffice.App.csproj"
+          msbuild $projectPath /p:Configuration=Release /p:DeployOnBuild=true /p:WebPublishMethod=FileSystem /p:OutDir="$outDir/" /p:DeleteExistingFiles=True
+        shell: pwsh
+  release:
+    needs: build
+    runs-on: windows-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Create a release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_ACTION_CICD }}
+        with:
+          tag_name: RLS/${{ github.event.inputs.environment }}/${{ needs.setup.outputs.datetime }}
+          release_name: RLS/${{ github.event.inputs.environment }}/${{ needs.setup.outputs.datetime }}
+          body: Release RLS/${{ github.event.inputs.environment }}/${{ needs.setup.outputs.datetime }}
+          draft: false
+          prerelease: false
+      - name: Compress Release Asset
+        run: Compress-Archive -Path publish/_PublishedWebsites/Memory.BackOffice.App/* -DestinationPath publish/Memory.BackOffice.App.zip
+        shell: pwsh
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_ACTION_CICD }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: publish/Memory.BackOffice.App.zip
+          asset_name: Memory.BackOffice.App.zip
+          asset_content_type: application/zip
+  publish:
+    needs: release
+    runs-on: windows-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Deploy to Azure WebApp
+        uses: Azure/webapps-deploy@v2
+        with:
+          app-name: 'memorybackoffice'
+          slot-name: ${{ github.event.inputs.environment }}
+          publish-profile: ${{ secrets.Azure_WebApp_Publish_Profile }}
+          package: publish/Memory.BackOffice.App.zip
